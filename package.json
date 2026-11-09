@@ -1,0 +1,14 @@
+{
+  "name": "cachelab",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "start": "node dist/src/index.js",
+    "test": "npm run build && node --test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
+  }
+}
