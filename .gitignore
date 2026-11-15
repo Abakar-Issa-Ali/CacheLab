@@ -4,3 +4,10 @@ coverage/
 .env
 .env.*
 !.env.example
+
+node_modules/
+dist/
+client/node_modules/
+client/dist/
+.env
+.env.*
