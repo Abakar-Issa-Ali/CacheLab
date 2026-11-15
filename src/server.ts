@@ -2,6 +2,22 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { HashMap } from "./hash-map";
 
 const MAX_BODY_BYTES = 1024 * 1024;
+const MAX_KEY_BYTES = 1024;
+
+type StoredValue = { value: unknown; bytes: number };
+
+export type ServerOptions = {
+  maxEntries?: number;
+  maxStorageBytes?: number;
+};
+
+function validateKey(key: unknown): asserts key is string {
+  if (typeof key !== "string" || key.length === 0 ||
+      Buffer.byteLength(key) > MAX_KEY_BYTES || /[\u0000-\u001f\u007f]/.test(key) ||
+      key === "." || key === "..") {
+    throw new HttpError("Key must be 1–1024 UTF-8 bytes, without control characters or dot segments", 400);
+  }
+}
 
 class HttpError extends Error {
   constructor(
@@ -22,13 +38,18 @@ function sendNotFound(response: ServerResponse): void {
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
+  if (request.headers["content-type"]?.split(";")[0].trim().toLowerCase() !== "application/json") {
+    request.resume();
+    throw new HttpError("Content-Type must be application/json", 415);
+  }
   const chunks: Buffer[] = [];
   let totalBytes = 0;
 
-  for await (const chunk of request) {
+  for await (const chunk of request.iterator({ destroyOnReturn: false })) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     totalBytes += buffer.length;
     if (totalBytes > MAX_BODY_BYTES) {
+      request.resume();
       throw new HttpError("Request body exceeds 1 MiB", 413);
     }
     chunks.push(buffer);
@@ -46,7 +67,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 async function handleRequest(
-  store: HashMap<unknown>,
+  store: HashMap<StoredValue>,
+  limits: { maxEntries: number; maxStorageBytes: number; storageBytes: number },
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
@@ -69,12 +91,18 @@ async function handleRequest(
       ) {
         throw new HttpError("Body must include a non-empty key and a value", 400);
       }
+      validateKey(body.key);
       if (store.has(body.key)) {
         sendJson(response, 409, { error: "Key already exists" });
         return;
       }
 
-      store.set(body.key, body.value);
+      const bytes = Buffer.byteLength(body.key) + Buffer.byteLength(JSON.stringify(body.value));
+      if (store.size >= limits.maxEntries || limits.storageBytes + bytes > limits.maxStorageBytes) {
+        throw new HttpError("Cache capacity exceeded", 507);
+      }
+      store.set(body.key, { value: body.value, bytes });
+      limits.storageBytes += bytes;
       sendJson(response, 201, { key: body.key, value: body.value });
       return;
     }
@@ -91,9 +119,7 @@ async function handleRequest(
     } catch {
       throw new HttpError("Key must be URL-encoded correctly", 400);
     }
-    if (key.length === 0) {
-      throw new HttpError("Key must not be empty", 400);
-    }
+    validateKey(key);
 
     switch (request.method) {
       case "GET": {
@@ -101,7 +127,7 @@ async function handleRequest(
           sendNotFound(response);
           return;
         }
-        sendJson(response, 200, { key, value: store.get(key) });
+        sendJson(response, 200, { key, value: store.get(key)!.value });
         return;
       }
       case "PUT": {
@@ -114,15 +140,23 @@ async function handleRequest(
           return;
         }
 
-        store.set(key, body.value);
+        const previous = store.get(key)!;
+        const bytes = Buffer.byteLength(key) + Buffer.byteLength(JSON.stringify(body.value));
+        if (limits.storageBytes - previous.bytes + bytes > limits.maxStorageBytes) {
+          throw new HttpError("Cache capacity exceeded", 507);
+        }
+        store.set(key, { value: body.value, bytes });
+        limits.storageBytes += bytes - previous.bytes;
         sendJson(response, 200, { key, value: body.value });
         return;
       }
       case "DELETE": {
+        const previous = store.get(key);
         if (!store.delete(key)) {
           sendNotFound(response);
           return;
         }
+        limits.storageBytes -= previous!.bytes;
         response.writeHead(204);
         response.end();
         return;
@@ -133,6 +167,9 @@ async function handleRequest(
     }
   } catch (error) {
     if (error instanceof HttpError) {
+      if (error.statusCode === 413 || error.statusCode === 415) {
+        response.setHeader("connection", "close");
+      }
       sendJson(response, error.statusCode, { error: error.message });
       return;
     }
@@ -146,9 +183,23 @@ async function handleRequest(
   }
 }
 
-export function createKeyValueServer(): Server {
-  const store = new HashMap<unknown>();
-  return createServer((request, response) => {
-    void handleRequest(store, request, response);
+export function createKeyValueServer(options: ServerOptions = {}): Server {
+  const limits = {
+    maxEntries: options.maxEntries ?? 10_000,
+    maxStorageBytes: options.maxStorageBytes ?? 16 * 1024 * 1024,
+    storageBytes: 0,
+  };
+  for (const value of [limits.maxEntries, limits.maxStorageBytes]) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new RangeError("Cache limits must be positive safe integers");
+    }
+  }
+  const store = new HashMap<StoredValue>();
+  const server = createServer((request, response) => {
+    void handleRequest(store, limits, request, response);
   });
+  server.requestTimeout = 15_000;
+  server.headersTimeout = 10_000;
+  server.maxConnections = 100;
+  return server;
 }

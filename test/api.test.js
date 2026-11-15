@@ -82,3 +82,79 @@ test("reports duplicate creates, missing updates, and invalid request bodies", a
   });
   assert.equal(invalidBody.status, 400);
 });
+
+function jsonRequest(method, body) {
+  return { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) };
+}
+
+test("rejects invalid keys, malformed paths, bodies and media types", async () => {
+  for (const body of [null, [], {}, { key: "" , value: 1 }, { key: 1, value: 1 },
+    { key: "missing-value" }, { key: "é".repeat(513), value: 1 },
+    { key: "control\n", value: 1 }, { key: "..", value: 1 }]) {
+    assert.equal((await fetch(`${baseUrl}/keys`, jsonRequest("POST", body))).status, 400);
+  }
+  assert.equal((await fetch(`${baseUrl}/keys/%ZZ`)).status, 400);
+  assert.equal((await fetch(`${baseUrl}/keys/%00`)).status, 400);
+  assert.equal((await fetch(`${baseUrl}/keys/missing`, jsonRequest("PUT", {}))).status, 400);
+  const wrongType = await fetch(`${baseUrl}/keys`, { method: "POST", body: "{}" });
+  assert.equal(wrongType.status, 415);
+  assert.match(wrongType.headers.get("content-type"), /application\/json/);
+  assert.equal((await wrongType.json()).error, "Content-Type must be application/json");
+});
+
+test("rejects oversized bodies with a readable 413 JSON response", async () => {
+  for (const method of ["POST", "PUT"]) {
+    const response = await fetch(`${baseUrl}/keys${method === "PUT" ? "/large" : ""}`,
+      jsonRequest(method, { key: "large", value: "x".repeat(1024 * 1024) }));
+    assert.equal(response.status, 413);
+    assert.deepEqual(await response.json(), { error: "Request body exceeds 1 MiB" });
+  }
+});
+
+test("returns route and method errors with Allow headers", async () => {
+  assert.equal((await fetch(`${baseUrl}/unknown`)).status, 404);
+  for (const [path, method, allow] of [["/keys", "GET", "POST"], ["/keys/a", "PATCH", "GET, PUT, DELETE"]]) {
+    const response = await fetch(baseUrl + path, { method });
+    assert.equal(response.status, 405);
+    assert.equal(response.headers.get("allow"), allow);
+  }
+});
+
+test("preserves JSON values and encoded keys", async () => {
+  for (const [i, value] of [null, false, 0, "", [1, { nested: true }]].entries()) {
+    const key = `clé/?:# ${i}`;
+    assert.equal((await fetch(`${baseUrl}/keys`, jsonRequest("POST", { key, value }))).status, 201);
+    const response = await fetch(`${baseUrl}/keys/${encodeURIComponent(key)}`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { key, value });
+  }
+});
+
+test("storage quotas reject writes atomically and deletion releases space", async () => {
+  const limited = createKeyValueServer({ maxEntries: 2, maxStorageBytes: 12 });
+  await new Promise((resolve, reject) => {
+    limited.once("error", reject);
+    limited.listen(0, "127.0.0.1", resolve);
+  });
+  const url = `http://127.0.0.1:${limited.address().port}/keys`;
+  try {
+    assert.equal((await fetch(url, jsonRequest("POST", { key: "a", value: "1234" }))).status, 201);
+    assert.equal((await fetch(url, jsonRequest("POST", { key: "b", value: "1234" }))).status, 507);
+    assert.equal((await fetch(`${url}/a`, jsonRequest("PUT", { value: "x".repeat(20) }))).status, 507);
+    assert.deepEqual(await (await fetch(`${url}/a`)).json(), { key: "a", value: "1234" });
+    assert.equal((await fetch(`${url}/a`, jsonRequest("PUT", { value: 0 }))).status, 200);
+    assert.equal((await fetch(url, jsonRequest("POST", { key: "b", value: 0 }))).status, 201);
+    assert.equal((await fetch(url, jsonRequest("POST", { key: "c", value: 0 }))).status, 507);
+    assert.equal((await fetch(`${url}/a`, { method: "DELETE" })).status, 204);
+    assert.equal((await fetch(url, jsonRequest("POST", { key: "c", value: 0 }))).status, 201);
+  } finally {
+    await new Promise((resolve, reject) => limited.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("validates server quota configuration", () => {
+  for (const value of [0, -1, 1.5, Infinity, NaN]) {
+    assert.throws(() => createKeyValueServer({ maxEntries: value }), RangeError);
+    assert.throws(() => createKeyValueServer({ maxStorageBytes: value }), RangeError);
+  }
+});

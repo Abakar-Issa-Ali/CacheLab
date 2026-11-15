@@ -12,6 +12,10 @@ export class HashMap<Value> {
   private buckets: Array<Entry<Value> | undefined> = new Array(INITIAL_CAPACITY);
   private count = 0;
 
+  get capacity(): number {
+    return this.buckets.length;
+  }
+
   get size(): number {
     return this.count;
   }
