@@ -11,3 +11,8 @@ client/node_modules/
 client/dist/
 .env
 .env.*
+
+node_modules/
+dist/
+.env
+.env.*
