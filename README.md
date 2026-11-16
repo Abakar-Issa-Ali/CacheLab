@@ -19,16 +19,17 @@ npm test
 npm run benchmark
 ```
 
-Les tests compilent le projet puis utilisent le runner Node et de vrais serveurs HTTP locaux sur des ports éphémères. L'environnement doit autoriser l'ouverture de sockets locales. Le benchmark mesure uniquement le moteur de stockage.
+Les tests compilent le projet puis utilisent le runner Node et de vrais serveurs HTTP locaux sur des ports éphémères. L'environnement doit autoriser l'ouverture de sockets locales. Le benchmark principal mesure HTTP ; `benchmark:hashmap` conserve les mesures du moteur seul.
 
 ## Architecture
 
 - `src/hash-map.ts` : moteur générique `HashMap<Value>` et listes chaînées.
+- `src/cache.ts` : TTL, quotas, persistance, restauration, compteurs et opérations numériques.
 - `src/server.ts` : création du serveur HTTP, validation, quotas, routes et erreurs JSON. Chaque serveur possède son propre stockage.
 - `src/index.ts` : validation du port et lancement sur l'interface locale.
 - `test/hash-map.test.js` : opérations, collisions et seuils de redimensionnement.
 - `test/api.test.js` : CRUD HTTP, validation, erreurs et quotas.
-- `scripts/benchmark.js` : mesures reproductibles à 100, 1 000 et 10 000 clés.
+- `scripts/benchmark.js` : microbenchmark HashMap ; `scripts/benchmark-http.js` : charge HTTP dans un processus séparé.
 - `docs/` : audit, mesures et brouillons des livrables pédagogiques.
 
 ## Fonctionnement de la HashMap
@@ -45,41 +46,69 @@ Pour des clés de longueur bornée et une bonne répartition, recherche, modific
 
 ## API REST
 
-Les requêtes POST/PUT doivent avoir `Content-Type: application/json`. Une valeur peut être un objet, tableau, nombre, booléen, chaîne ou `null`. L'absence du champ `value` est refusée.
-
-| Méthode | Chemin | Réponse |
+| Méthode | Route | Résultat |
 |---|---|---|
-| POST | `/keys` | 201 `{ "key": "...", "value": ... }`, 409 si doublon |
-| GET | `/keys/:key` | 200 `{ "key": "...", "value": ... }`, 404 si absente |
-| PUT | `/keys/:key` | 200 même format, 404 si absente |
-| DELETE | `/keys/:key` | 204 sans corps, 404 si absente |
+| POST | `/keys` | Créer `{key,value,ttl?}` : 201 ; doublon : 409 |
+| GET | `/keys` | `{keys:[...]}` ; tableau vide si cache vide |
+| GET | `/keys/:key` | `{key,value,expiresAt?,ttlRemaining?}` : 200 ou 404 |
+| PUT | `/keys/:key` | Modifier `{value,ttl?}` : 200 ou 404 |
+| DELETE | `/keys/:key` | Supprimer : 204 ou 404 |
+| POST | `/keys/:key/incr` | Ajouter 1 : 200 ou 404 |
+| POST | `/keys/:key/decr` | Soustraire 1 : 200 ou 404 |
+| GET | `/metrics` | Hits, misses, clés actives, octets, quota, taux de réussite |
 
-`GET /keys` optionnel n'est pas implémenté (405). Les méthodes non autorisées répondent 405 avec `Allow`, les routes inconnues 404. Les erreurs ont la forme `{ "error": "message" }` : 400 pour une requête invalide, 413 pour un corps trop grand, 415 pour un type de contenu incorrect, 507 lorsque le cache est plein, 500 en cas d'erreur interne inattendue.
+POST `/keys` et PUT exigent `Content-Type: application/json`. Les opérations numériques n'exigent pas de corps. Une valeur peut être tout JSON contenant uniquement des nombres finis. Les chaînes numériques, booléens et null ne sont pas convertis par INCR/DECR. Les décimaux sont acceptés ; les résultats hors de ±`Number.MAX_SAFE_INTEGER`, non finis ou inchangés par perte de précision sont refusés (400).
+
+Encoder les clés avec `encodeURIComponent`, notamment `/`, `?`, `#` et les espaces. Les clés sont sensibles à la casse, sans normalisation Unicode. Maximum 1 024 octets UTF-8 ; caractères de contrôle et segments `.` et `..` refusés. Corps limité à 1 MiB. Erreurs JSON `{error:"..."}` : 400 validation, 404 absence/route, 405 méthode avec `Allow`, 409 doublon, 413 taille, 415 média, 507 quota, 500 écriture disque impossible ou erreur interne.
+
+## TTL
+
+`ttl` est une durée positive en **secondes**, fractions acceptées (ex. `0.05`). Le serveur conserve une échéance absolue en millisecondes Unix (`expiresAt`) et renvoie `ttlRemaining` en secondes lorsque la clé expire. Sans TTL à la création, la clé est permanente. PUT sans `ttl` conserve l'échéance ; un nombre la remplace et `null` la retire. INCR/DECR conservent le TTL.
+
+Expiration à l'accès et balayage périodique toutes les secondes ; une clé expirée est immédiatement inaccessible, même entre deux balayages. Liste, métriques et écritures purgent également les expirations et libèrent les quotas. Le nettoyage périodique s'arrête avec le serveur. Une expiration n'incrémente les misses que lors d'un GET individuel.
+
+## Persistance et restauration
+
+`npm start` utilise `data/cache.json`. Exemple : `CACHE_FILE=/tmp/demo-cache.json PORT=3001 npm start`. Le fichier contient une version et les entrées avec échéances absolues ; les octets sont recalculés au rechargement. Chaque mutation réussie écrit un snapshot dans un fichier temporaire voisin, synchronise ce fichier puis le renomme sur la destination. La mémoire n'est modifiée qu'après la sauvegarde ; un échec retourne 500 et conserve la valeur précédente.
+
+Un fichier absent donne un cache vide. Un fichier invalide, illisible ou dépassant les quotas empêche le démarrage sans être écrasé : corriger le fichier ou choisir un autre chemin. Les entrées déjà expirées sont ignorées. Le nettoyage TTL libère la mémoire sans écrire seul sur disque ; les anciennes entrées expirées peuvent subsister dans le dernier snapshot, mais ne sont jamais restaurées comme actives. La prochaine mutation actualise le snapshot.
+
+`createKeyValueServer({maxEntries,maxStorageBytes,persistencePath,cleanupIntervalMs})` permet de configurer une instance. Sans `persistencePath`, elle reste en mémoire (tests et benchmark par défaut). Les limites et l'intervalle sont des entiers positifs sûrs ; l'intervalle est au maximum 2 147 483 647 ms. Un seul processus doit utiliser un fichier donné.
+
+## Métriques et limites
+
+Seuls les GET `/keys/:key` valides comptent : clé active = hit, absente/expirée = miss. CRUD, INCR/DECR, KEYS, nettoyage et consultation des métriques ne changent pas ces compteurs. `hitRate = hits / (hits + misses) × 100`, arrondi à deux décimales, zéro sans lecture. Les compteurs repartent à zéro au redémarrage.
+
+Quotas par défaut : 10 000 clés et 16 MiB de clés UTF-8 + valeurs JSON sérialisées. Ce volume exclut les métadonnées TTL et le surcoût des objets JS ; il ne mesure pas la RAM réelle. Les écritures refusées préservent la valeur et son TTL. Aucune éviction automatique hormis l'expiration.
+
+Le moteur HashMap reste O(1) en moyenne pour une opération individuelle, mais les balayages TTL et KEYS sont linéaires. Les écritures du service balaient les expirations ; avec persistance elles sérialisent aussi tout le cache et bloquent la boucle Node pendant les accès disque synchrones. Cette solution simple convient à la démonstration, pas à une forte charge. Le renommage atomique évite un JSON partiellement remplacé ; aucune garantie de survie à une coupure électrique du répertoire n'est annoncée. Pas de verrou multiprocessus, journal, réplication, authentification ou TLS. Écoute locale uniquement ; 100 connexions maximum, délai requête 15 s, en-têtes 10 s.
+
+## Frontend React
+
+Dans un second terminal :
 
 ```bash
-curl -i -X POST http://127.0.0.1:3000/keys \
-  -H 'Content-Type: application/json' \
-  -d '{"key":"session:1","value":{"user":"Alice"}}'
-curl -i http://127.0.0.1:3000/keys/session%3A1
-curl -i -X PUT http://127.0.0.1:3000/keys/session%3A1 \
-  -H 'Content-Type: application/json' -d '{"value":"active"}'
-curl -i -X DELETE http://127.0.0.1:3000/keys/session%3A1
+npm ci --prefix client
+npm --prefix client run dev
 ```
 
-Encoder la clé avec `encodeURIComponent` côté client, notamment pour `/`, `?`, `#` ou les espaces. Les clés sont sensibles à la casse ; les espaces ne sont pas supprimés et aucune normalisation Unicode n'est appliquée. Les clés vides, les caractères de contrôle ASCII et les clés `.` ou `..` sont refusés (ces dernières sont normalisées dans les URL).
+Ouvrir l'adresse Vite affichée. Le formulaire conserve l'architecture React existante et propose CRUD, liste des clés, INCR/DECR, TTL et métriques, avec le statut HTTP et la réponse JSON. La valeur est du JSON (`123`, `"Alice"`, `{"a":1}`). Laisser le TTL vide pour conserver le comportement par défaut ; saisir `null` pour le retirer. Le TTL affiché dans la réponse est un instantané, pas un compte à rebours.
 
-## Protections et limites du MVP
+Le proxy de développement Vite transmet `/keys` et `/metrics` vers `127.0.0.1:3000`. Adapter `client/vite.config.ts` pour un autre port. `npm --prefix client run build` génère `client/dist`. En production, servir ces fichiers et configurer un reverse proxy pour ces deux routes ; `vite preview` ne fournit pas ce déploiement API.
 
-- Clés : maximum 1 024 octets UTF-8 ; corps JSON : maximum 1 MiB pour POST et PUT.
-- Par serveur : maximum 10 000 entrées et 16 MiB cumulés de clés UTF-8 + valeurs JSON sérialisées. Un refus conserve les données précédentes ; remplacer une valeur ou supprimer une clé ajuste le quota.
-- Ces octets sont un indicateur de volume, **pas une limite exacte de la RAM** : objets JavaScript, nœuds, tableaux, buffers de requêtes et sérialisation consomment aussi de la mémoire. Les JSON contenant de nombreux petits objets peuvent avoir un surcoût important.
-- `createKeyValueServer({ maxEntries, maxStorageBytes })` permet d'adapter les quotas ; les deux valeurs doivent être des entiers positifs sûrs.
-- Délai de réception : 15 s, en-têtes : 10 s ; vérification des délais selon la cadence interne de Node. Maximum 100 connexions simultanées. Ce n'est pas une limitation du débit par client.
-- Pas d'authentification : toute personne pouvant joindre le serveur peut lire, modifier ou supprimer les données. L'écoute locale est conservée ; avant toute exposition distante, prévoir authentification, TLS et contrôle de débit via une infrastructure adaptée.
-- Aucune persistance, expiration TTL, éviction ou réplication. Un redémarrage perd toutes les données ; un cache plein refuse les écritures dépassant les quotas. Ces fonctions ne sont pas annoncées comme réalisées.
+## Tests, benchmarks et démonstration
 
-## Livrables pédagogiques et bilan
+```bash
+npm test
+npm --prefix client run build
+npm run benchmark
+npm run benchmark:hashmap
+BENCH_VOLUMES=100,1000 BENCH_CONCURRENCY=1,10 BENCH_REQUESTS=200 npm run benchmark
+BENCH_PERSIST=1 BENCH_VOLUMES=100 BENCH_CONCURRENCY=1 BENCH_REQUESTS=100 npm run benchmark
+```
 
-Le fichier officiel `CacheLab-1.pdf` était introuvable lors de la reprise : la conformité complète au sujet reste à vérifier avec ce document. Voir [l'audit](docs/audit.md) et les [mesures réelles](docs/performances.md).
+Le runner Node conserve les tests initiaux et couvre opérations numériques, TTL court, nettoyage sans requête, quotas, erreurs disque, métriques et redémarrage HTTP. Les tests utilisent des ports éphémères et des fichiers temporaires. Les environnements doivent autoriser les sockets locales. Les fichiers compilés sont générés depuis `src/` par TypeScript strict et exclus de Git.
 
-Les cahiers des charges et la note de cadrage étaient absents. Des brouillons décrivant l'état technique observable sont désormais disponibles : [fonctionnel](docs/cahier-fonctionnel.md), [technique](docs/cahier-technique.md), [cadrage et planification](docs/cadrage-planification.md). Ils restent à relire avec le sujet et à valider par l'équipe ; aucun budget, responsable ou calendrier d'équipe n'est inventé.
+Le benchmark HTTP démarre un processus serveur séparé et mesure les sept opérations avec échauffement, réponses entièrement consommées, concurrence bornée, délai client de 10 s, contrôle des statuts attendus, moyenne/min/max/P50/P95/P99 en ms et débit. Volumes = nombre de clés initial ; POST ajoute ensuite des clés et DELETE possède des clés de préparation distinctes. Les scénarios d'un couple volume/concurrence se suivent sur la même instance. Le débit comprend les réponses en échec ; leur nombre est affiché. Chaque ligne est du JSON exploitable. Les percentiles utilisent le rang supérieur. Les résultats dépendent du matériel, du JIT, du GC et de la charge ; 200 mesures donnent seulement une première indication du P99.
+
+Voir [les résultats mesurés et leur interprétation](docs/performances.md), [le guide de soutenance et les commandes curl](docs/soutenance.md) et [le compte rendu de finalisation](docs/finalisation.md). Les anciens documents d'audit sont des archives de la reprise précédente ; leurs indications de fonctionnalités absentes ne décrivent plus cette version.

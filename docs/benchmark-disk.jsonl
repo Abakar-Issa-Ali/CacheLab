@@ -1,0 +1,8 @@
+{"date": "2026-11-16T21:06:33.531Z", "node": "v22.22.2", "platform": "linux", "cpu": "Intel(R) Celeron(R) N5095 @ 2.00GHz", "persistence": true, "samples": 100, "warmup": 20}
+{"volume": 100, "concurrency": 1, "operation": "GET", "success": 100, "failed": 0, "meanMs": 3.232, "minMs": 1.26, "maxMs": 12.136, "p50Ms": 2.423, "p95Ms": 7.515, "p99Ms": 8.725, "requestsPerSecond": 308.668}
+{"volume": 100, "concurrency": 1, "operation": "POST", "success": 100, "failed": 0, "meanMs": 3.798, "minMs": 2.265, "maxMs": 12.696, "p50Ms": 3.158, "p95Ms": 6.48, "p99Ms": 8.552, "requestsPerSecond": 262.935}
+{"volume": 100, "concurrency": 1, "operation": "PUT", "success": 100, "failed": 0, "meanMs": 3.731, "minMs": 1.904, "maxMs": 12.068, "p50Ms": 3.173, "p95Ms": 7.264, "p99Ms": 11.388, "requestsPerSecond": 267.601}
+{"volume": 100, "concurrency": 1, "operation": "KEYS", "success": 100, "failed": 0, "meanMs": 1.831, "minMs": 1.426, "maxMs": 7.622, "p50Ms": 1.704, "p95Ms": 2.28, "p99Ms": 2.655, "requestsPerSecond": 545.529}
+{"volume": 100, "concurrency": 1, "operation": "INCR", "success": 100, "failed": 0, "meanMs": 2.523, "minMs": 1.708, "maxMs": 8.147, "p50Ms": 2.193, "p95Ms": 4.291, "p99Ms": 7.584, "requestsPerSecond": 396.086}
+{"volume": 100, "concurrency": 1, "operation": "DECR", "success": 100, "failed": 0, "meanMs": 3.061, "minMs": 1.958, "maxMs": 10.481, "p50Ms": 2.441, "p95Ms": 5.205, "p99Ms": 7.614, "requestsPerSecond": 326.5}
+{"volume": 100, "concurrency": 1, "operation": "DELETE", "success": 100, "failed": 0, "meanMs": 1.935, "minMs": 1.196, "maxMs": 5.093, "p50Ms": 1.827, "p95Ms": 2.769, "p99Ms": 4.707, "requestsPerSecond": 516.393}
