@@ -9,7 +9,10 @@ const MAX_LOAD_FACTOR = 0.75;
 const MIN_LOAD_FACTOR = 0.25;
 
 export class HashMap<Value> {
-  private buckets: Array<Entry<Value> | undefined> = new Array(INITIAL_CAPACITY);
+  private buckets: Array<Entry<Value> | undefined> = new Array(
+    INITIAL_CAPACITY,
+  );
+
   private count = 0;
 
   get capacity(): number {
@@ -20,6 +23,7 @@ export class HashMap<Value> {
     return this.count;
   }
 
+  // Ajouter ou modifier une valeur
   set(key: string, value: Value): void {
     let index = this.bucketIndex(key, this.buckets.length);
     let entry = this.buckets[index];
@@ -29,10 +33,14 @@ export class HashMap<Value> {
         entry.value = value;
         return;
       }
+
       entry = entry.next;
     }
 
-    if ((this.count + 1) / this.buckets.length > MAX_LOAD_FACTOR) {
+    if (
+      (this.count + 1) / this.buckets.length >
+      MAX_LOAD_FACTOR
+    ) {
       this.resize(this.buckets.length * 2);
       index = this.bucketIndex(key, this.buckets.length);
     }
@@ -42,37 +50,51 @@ export class HashMap<Value> {
       value,
       next: this.buckets[index],
     };
+
     this.count += 1;
   }
 
+  // Récupérer une valeur
   get(key: string): Value | undefined {
-    let entry = this.buckets[this.bucketIndex(key, this.buckets.length)];
+    let entry = this.buckets[
+      this.bucketIndex(key, this.buckets.length)
+    ];
 
     while (entry) {
       if (entry.key === key) {
         return entry.value;
       }
+
       entry = entry.next;
     }
 
     return undefined;
   }
 
+  // Vérifier si une clé existe
   has(key: string): boolean {
-    let entry = this.buckets[this.bucketIndex(key, this.buckets.length)];
+    let entry = this.buckets[
+      this.bucketIndex(key, this.buckets.length)
+    ];
 
     while (entry) {
       if (entry.key === key) {
         return true;
       }
+
       entry = entry.next;
     }
 
     return false;
   }
 
+  // Supprimer une clé
   delete(key: string): boolean {
-    const index = this.bucketIndex(key, this.buckets.length);
+    const index = this.bucketIndex(
+      key,
+      this.buckets.length,
+    );
+
     let entry = this.buckets[index];
     let previous: Entry<Value> | undefined;
 
@@ -85,12 +107,20 @@ export class HashMap<Value> {
         }
 
         this.count -= 1;
+
         if (
           this.buckets.length > INITIAL_CAPACITY &&
-          this.count / this.buckets.length < MIN_LOAD_FACTOR
+          this.count / this.buckets.length <
+            MIN_LOAD_FACTOR
         ) {
-          this.resize(Math.max(INITIAL_CAPACITY, this.buckets.length / 2));
+          this.resize(
+            Math.max(
+              INITIAL_CAPACITY,
+              this.buckets.length / 2,
+            ),
+          );
         }
+
         return true;
       }
 
@@ -101,24 +131,63 @@ export class HashMap<Value> {
     return false;
   }
 
-  private bucketIndex(key: string, capacity: number): number {
-    let hash = 0x811c9dc5;
-    for (let i = 0; i < key.length; i += 1) {
-      hash = Math.imul(hash ^ key.charCodeAt(i), 0x01000193);
-    }
-    return (hash >>> 0) % capacity;
-  }
+  // ==========================================
+  // NOUVELLE FONCTIONNALITÉ : KEYS
+  // Retourner toutes les clés du cache
+  // ==========================================
 
-  private resize(capacity: number): void {
-    const newBuckets: Array<Entry<Value> | undefined> = new Array(capacity);
+  keys(): string[] {
+    const result: string[] = [];
 
     for (const bucket of this.buckets) {
       let entry = bucket;
+
+      while (entry) {
+        result.push(entry.key);
+        entry = entry.next;
+      }
+    }
+
+    return result;
+  }
+
+  // Calculer l'indice du bucket d'une clé
+  private bucketIndex(
+    key: string,
+    capacity: number,
+  ): number {
+    let hash = 0x811c9dc5;
+
+    for (let i = 0; i < key.length; i += 1) {
+      hash = Math.imul(
+        hash ^ key.charCodeAt(i),
+        0x01000193,
+      );
+    }
+
+    return (hash >>> 0) % capacity;
+  }
+
+  // Redimensionner la table de hachage
+  private resize(capacity: number): void {
+    const newBuckets: Array<
+      Entry<Value> | undefined
+    > = new Array(capacity);
+
+    for (const bucket of this.buckets) {
+      let entry = bucket;
+
       while (entry) {
         const next = entry.next;
-        const index = this.bucketIndex(entry.key, capacity);
+
+        const index = this.bucketIndex(
+          entry.key,
+          capacity,
+        );
+
         entry.next = newBuckets[index];
         newBuckets[index] = entry;
+
         entry = next;
       }
     }
