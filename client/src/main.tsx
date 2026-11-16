@@ -2,7 +2,6 @@ import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
 
-
 function App() {
   const [method, setMethod] = useState("POST");
   const [key, setKey] = useState("");
@@ -10,21 +9,17 @@ function App() {
   const [result, setResult] = useState("");
   const [status, setStatus] = useState<number | null>(null);
 
-
   async function envoyer() {
     if (!key.trim()) {
       setResult("Veuillez saisir une clé.");
       return;
     }
 
-
     try {
       let body;
 
-
       if (method === "POST" || method === "PUT") {
         const parsedValue = JSON.parse(value);
-
 
         body =
           method === "POST"
@@ -32,12 +27,10 @@ function App() {
             : { value: parsedValue };
       }
 
-
       const url =
         method === "POST"
           ? "/keys"
-          : /keys/${encodeURIComponent(key)};
-
+          : `/keys/${encodeURIComponent(key)}`;
 
       const response = await fetch(url, {
         method,
@@ -47,12 +40,9 @@ function App() {
         body: body ? JSON.stringify(body) : undefined,
       });
 
-
       const text = await response.text();
 
-
       setStatus(response.status);
-
 
       try {
         setResult(
@@ -71,12 +61,10 @@ function App() {
     }
   }
 
-
   return (
     <div className="container">
       <h1>CacheLab</h1>
       <p>Tester notre API REST</p>
-
 
       <label>Méthode HTTP</label>
       <select
@@ -89,14 +77,12 @@ function App() {
         <option value="DELETE">DELETE - Supprimer</option>
       </select>
 
-
       <label>Clé</label>
       <input
         value={key}
         onChange={(e) => setKey(e.target.value)}
         placeholder="Exemple : nom"
       />
-
 
       {(method === "POST" || method === "PUT") && (
         <>
@@ -109,14 +95,11 @@ function App() {
         </>
       )}
 
-
       <button onClick={envoyer}>
         Envoyer {method}
       </button>
 
-
       <h2>Réponse du serveur</h2>
-
 
       {status !== null && (
         <p>
@@ -124,12 +107,10 @@ function App() {
         </p>
       )}
 
-
       <pre>{result || "Aucune requête envoyée."}</pre>
     </div>
   );
 }
-
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

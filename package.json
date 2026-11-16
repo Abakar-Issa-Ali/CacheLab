@@ -6,7 +6,8 @@
     "build": "tsc --project tsconfig.json",
     "start": "node dist/src/index.js",
     "test": "npm run build && node --test",
-    "benchmark": "npm run build && node scripts/benchmark.js"
+    "benchmark": "npm run build && node scripts/benchmark-http.js",
+    "benchmark:hashmap": "npm run build && node scripts/benchmark.js"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
