@@ -1,5 +1,369 @@
 # CacheLab
 
+# CacheLab
+
+**CacheLab** est un projet pédagogique de cache clé-valeur développé en **TypeScript / Node.js**, avec une **HashMap construite sans utiliser `Map` comme moteur principal**, une API REST et une interface web **React**.
+
+Le projet permet d'explorer les structures de données, la gestion de la mémoire, les API HTTP, les tests automatisés et la mesure des performances.
+
+## Équipe
+
+Projet réalisé en groupe par **Fallou, Mehdi et Ali**.
+
+## Fonctionnalités
+
+- **HashMap personnalisée** : table de hachage, buckets avec chaînage pour les collisions, redimensionnement automatique.
+- **Cache clé-valeur** : création, lecture, modification et suppression de valeurs JSON.
+- **TTL (Time To Live)** : durée de vie optionnelle des entrées, avec expiration et nettoyage périodique.
+- **Persistance** : sauvegarde et restauration des données sur disque par snapshot.
+- **Quotas** : limitation du nombre de clés et de la taille logique du stockage.
+- **Compteurs** : hits, misses, taux de réussite du cache et occupation du stockage.
+- **Opérations numériques** : incrémentation (`INCR`) et décrémentation (`DECR`) de valeurs numériques.
+- **Interface React** : opérations sur les clés et tableau de bord des statistiques.
+- **Tests et benchmarks** : vérification fonctionnelle et mesures de performance.
+
+## Technologies
+
+
+| Composant     | Technologies                        |
+| ------------- | ----------------------------------- |
+| Backend       | Node.js, TypeScript, API HTTP REST  |
+| Frontend      | React, TypeScript, Vite, CSS        |
+| Tests         | Node.js Test Runner (`node --test`) |
+| Benchmarks    | Scripts Node.js et requêtes HTTP   |
+| Versionnement | Git et GitHub                       |
+
+## Structure du projet
+
+```text
+CacheLab/
+├── src/
+│   ├── hash-map.ts       # Table de hachage personnalisée
+│   ├── cache.ts          # Logique métier du cache
+│   ├── server.ts         # API REST
+│   └── index.ts          # Point d'entrée du serveur
+├── client/
+│   └── src/
+│       ├── main.tsx      # Interface React
+│       └── style.css     # Styles
+├── scripts/
+│   ├── benchmark.js      # Benchmark des opérations de la HashMap
+│   └── benchmark-http.js # Benchmark HTTP de l'API
+├── test/                 # Tests automatisés
+├── package.json
+└── README.md
+```
+
+> Certains fichiers de configuration et de compilation ne sont pas détaillés dans cet arbre.
+
+## Prérequis
+
+- **Node.js** récent (projet testé avec Node.js **22.22.2**).
+- **npm**.
+- **Git**, si vous récupérez le projet avec `git clone`.
+
+## Installation
+
+### 1. Télécharger le projet
+
+Pour récupérer la branche de démonstration, si elle a bien été publiée :
+
+```bash
+git clone --branch feature/cachelab-final --single-branch https://github.com/Abakar-Issa-Ali/CacheLab.git
+cd CacheLab
+```
+
+Ou télécharger l'archive ZIP de la branche depuis GitHub, puis la décompresser et ouvrir un terminal dans le dossier du projet.
+
+> Si le dépôt est privé, l'accès doit être accordé au collaborateur.
+
+### 2. Installer le backend
+
+```bash
+npm install
+npm run build
+```
+
+### 3. Installer le frontend
+
+```bash
+cd client
+npm install
+cd ..
+```
+
+## Démarrer l'application
+
+Ouvrir **deux terminaux**.
+
+**Terminal 1 — Backend :**
+
+```bash
+cd CacheLab
+npm run build
+npm start
+```
+
+**Terminal 2 — Frontend :**
+
+```bash
+cd CacheLab/client
+npm run dev
+```
+
+Vite affiche une adresse locale dans le terminal, généralement `http://localhost:5173`. Ouvrez cette adresse dans le navigateur.
+
+> Les commandes supposent que vous êtes dans le dossier parent de `CacheLab`. Si vous êtes déjà à la racine du dépôt, ne répétez pas `cd CacheLab`.
+>
+> Le frontend doit pouvoir accéder au backend : vérifier la configuration du proxy Vite et le port du serveur si les appels API échouent.
+
+## Utilisation rapide
+
+Dans l'interface web :
+
+1. Choisir **POST / SET**, saisir la clé `score` et la valeur JSON `10`, puis exécuter.
+2. Choisir **GET**, saisir `score` et vérifier que la valeur retournée est `10`.
+3. Choisir **INCR** pour augmenter la valeur de `1` : elle doit devenir `11`.
+4. Choisir **DECR** pour la diminuer de `1` : elle doit revenir à `10`.
+5. Consulter **METRICS** pour afficher les statistiques du cache.
+6. Pour essayer l'expiration, créer une clé avec un **TTL** court (par exemple 10 secondes), attendre puis tenter un GET.
+
+Les chaînes de caractères doivent être saisies comme des chaînes JSON : par exemple `"bonjour"`, et non `bonjour`, si l'interface attend du JSON strict.
+
+## API REST
+
+Les routes principales du projet sont :
+
+
+| Méthode | Route        | Description                    |
+| -------- | ------------ | ------------------------------ |
+| `POST`   | `/keys`      | Créer une entrée clé-valeur |
+| `GET`    | `/keys/:key` | Lire la valeur d'une clé      |
+| `PUT`    | `/keys/:key` | Modifier une valeur            |
+| `DELETE` | `/keys/:key` | Supprimer une clé             |
+| `GET`    | `/keys`      | Lister les clés               |
+| `GET`    | `/metrics`   | Lire les statistiques du cache |
+
+Des opérations **INCR** et **DECR** sont également implémentées. Vérifier leurs chemins exacts et leurs méthodes HTTP dans `src/server.ts` avant de les documenter comme contrat public de l'API.
+
+### Exemple de valeur JSON
+
+```json
+{
+  "key": "score",
+  "value": 10
+}
+```
+
+Le format exact du corps des requêtes et les options de TTL sont définis dans `src/server.ts`.
+
+## Fonctionnement de la HashMap
+
+Le moteur du cache repose sur une **table de hachage personnalisée** :
+
+1. Une fonction de hachage transforme la clé en valeur numérique.
+2. Cette valeur détermine un **bucket** (emplacement dans la table).
+3. Lorsque plusieurs clés correspondent au même bucket, les collisions sont gérées par **chaînage**.
+4. La table est redimensionnée selon son **facteur de charge** pour limiter les collisions.
+
+Paramètres utilisés dans le projet :
+
+- Capacité initiale : **16 buckets**.
+- Seuil d'agrandissement : **0,75**.
+- Seuil de réduction : **0,25**, sans descendre sous la capacité minimale.
+
+### Complexité algorithmique
+
+
+| Opération HashMap     | Moyenne attendue | Pire cas |
+| ---------------------- | ---------------- | -------- |
+| Insertion (`set`)      | O(1) amorti      | O(n)     |
+| Recherche (`get`)      | O(1)             | O(n)     |
+| Suppression (`delete`) | O(1)             | O(n)     |
+| Parcours des clés     | O(n)             | O(n)     |
+
+Ces complexités concernent **la HashMap seule**. Une requête HTTP peut aussi effectuer des validations, de la sérialisation JSON, un nettoyage des clés expirées ou une écriture de snapshot sur disque. Il ne faut donc pas assimiler la complexité de la HashMap au coût total de l'API.
+
+## Gestion du cache
+
+### TTL et expiration
+
+Le **TTL** (*Time To Live*) correspond à la durée pendant laquelle une entrée reste valide. Après expiration, la valeur n'est plus considérée comme disponible. Le projet prévoit un nettoyage des entrées expirées.
+
+### Persistance
+
+La persistance permet de restaurer le contenu du cache après un redémarrage à partir d'un snapshot sur disque. La stratégie d'écriture du snapshot peut influencer les performances, en particulier lors de nombreuses modifications.
+
+### Quotas
+
+Le cache prévoit par défaut :
+
+- **10 000 clés** au maximum.
+- **16 MiB** de stockage logique, soit **16 777 216 octets**.
+
+La mesure de stockage correspond aux octets des clés et des valeurs JSON sérialisées. **Ce n'est pas une mesure exacte de la RAM consommée par Node.js.**
+
+## Statistiques du tableau de bord
+
+
+| Indicateur            | Signification                                                           |
+| --------------------- | ----------------------------------------------------------------------- |
+| **Clés actives**     | Nombre d'entrées présentes et non expirées dans le cache             |
+| **Hits**              | Nombre de lectures comptabilisées ayant trouvé une clé               |
+| **Misses**            | Nombre de lectures comptabilisées n'ayant pas trouvé de valeur valide |
+| **Hit rate**          | Pourcentage de lectures réussies parmi les lectures comptabilisées    |
+| **Stockage utilisé** | Taille logique occupée par les clés et valeurs JSON                   |
+| **Stockage maximal**  | Quota maximal configuré                                                |
+
+**Formule du hit rate :**
+
+```text
+Hit rate (%) = hits / (hits + misses) × 100
+```
+
+Par exemple, avec 2 hits et 3 misses : `2 / (2 + 3) × 100 = 40 %`.
+
+> Un hit rate élevé indique que les lectures retrouvent souvent les données dans le cache. Il ne mesure pas directement la rapidité des requêtes.
+
+## Tests automatisés
+
+À la racine du projet :
+
+```bash
+npm test
+```
+
+Cette commande compile le code TypeScript puis lance les tests Node.js.
+
+Lors de la dernière exécution communiquée pour ce projet : **37 tests réussis sur 37**, sans échec.
+
+Les tests couvrent notamment :
+
+- Les opérations de la HashMap, collisions et redimensionnement.
+- Les opérations HTTP CRUD et la liste des clés.
+- Les quotas, le TTL et le nettoyage des expirations.
+- La persistance et les métriques.
+- Le comportement et les options des scripts de benchmark.
+
+Ce résultat correspond à une exécution donnée : relancer `npm test` après chaque modification.
+
+## Benchmarks : mesurer les performances
+
+Un **benchmark** est un test qui mesure le temps d'exécution ou le débit d'un programme. CacheLab distingue deux niveaux.
+
+### 1. Benchmark de la HashMap
+
+**Fichier :** `scripts/benchmark.js`
+
+**Commande :**
+
+```bash
+npm run benchmark:hashmap
+```
+
+**Objectif :** mesurer les performances des opérations sur la structure de données, indépendamment du trajet complet d'une requête HTTP. Cela permet d'étudier le comportement de la table lorsque le nombre de clés augmente.
+
+### 2. Benchmark HTTP
+
+**Fichier :** `scripts/benchmark-http.js`
+
+**Commande :**
+
+```bash
+npm run benchmark -- --requests 1000 --concurrency 10
+```
+
+Ce benchmark sollicite l'API avec des requêtes HTTP. Il mesure notamment le temps de réponse et le nombre de requêtes traitées par seconde. Le scénario observé couvre `SET`, `GET`, `PUT`, `DELETE`, `KEYS`, `INCR`, `DECR` et `METRICS`.
+
+**Paramètres :**
+
+- `--requests 1000` : 1 000 requêtes mesurées par opération dans l'exécution présentée ci-dessous.
+- `--concurrency 10` : jusqu'à 10 requêtes simultanées.
+
+Pour découvrir les autres options disponibles :
+
+```bash
+npm run benchmark -- --help
+```
+
+### Comprendre les résultats
+
+
+| Mesure                | Définition                                                              |
+| --------------------- | ------------------------------------------------------------------------ |
+| **Latency / latence** | Temps entre l'envoi de la requête et la réception de la réponse       |
+| **Min / Max**         | Latence minimale / maximale observée                                    |
+| **Avg**               | Latence moyenne                                                          |
+| **P50**               | 50 % des requêtes ont une latence inférieure ou égale à cette valeur |
+| **P95**               | 95 % des requêtes ont une latence inférieure ou égale à cette valeur |
+| **P99**               | 99 % des requêtes ont une latence inférieure ou égale à cette valeur |
+| **RPS**               | *Requests Per Second* : requêtes traitées par seconde                  |
+| **Concurrency**       | Nombre de requêtes exécutées en parallèle                            |
+| **Success / Fail**    | Nombre de requêtes réussies / échouées                               |
+
+### Exemple de résultats obtenus
+
+Exécution du **16 novembre 2026**, en mode **memory**, sur une machine Linux avec **Node.js 22.22.2** et processeur **Intel Celeron N5095 à 2,00 GHz**. Chaque opération a fait l'objet de 1 000 requêtes mesurées, avec une concurrence de 10.
+
+
+| Opération | Latence moyenne |       P95 |     RPS | Échecs |
+| ---------- | --------------: | --------: | ------: | ------: |
+| SET        |       11,299 ms | 16,891 ms |   880,8 |       0 |
+| GET        |        6,730 ms | 10,298 ms | 1 480,1 |       0 |
+| PUT        |        9,010 ms | 14,826 ms | 1 107,7 |       0 |
+| DELETE     |        3,867 ms |  7,821 ms | 2 577,9 |       0 |
+| KEYS       |        4,874 ms |  8,479 ms | 2 043,9 |       0 |
+| INCR       |        4,202 ms |  7,805 ms | 2 365,3 |       0 |
+| DECR       |        4,693 ms |  9,074 ms | 2 117,6 |       0 |
+| METRICS    |        4,097 ms |  7,407 ms | 2 431,5 |       0 |
+
+**Bilan : 8 000 requêtes HTTP mesurées, 8 000 réussites, 0 échec.**
+
+**Important :** ces chiffres sont des mesures ponctuelles sur une machine et un scénario précis. Ils ne garantissent pas les mêmes performances sur un autre ordinateur ou en production. Le benchmark HTTP mesure le trajet complet de la requête, **pas uniquement le temps d'accès à la HashMap**. Le mode avec persistance disque n'est pas représenté dans ce tableau.
+
+## Démonstration pour la soutenance
+
+Une démonstration courte peut suivre cet ordre :
+
+1. **Présenter la HashMap** : fonction de hachage, buckets, collisions et redimensionnement.
+2. **Démarrer le backend et React** : montrer l'interface.
+3. **Exécuter SET et GET** : créer et retrouver une clé.
+4. **Exécuter INCR et DECR** : modifier une valeur numérique.
+5. **Montrer le TTL** : créer une entrée temporaire et constater son expiration.
+6. **Afficher les métriques** : expliquer hits, misses, hit rate et stockage.
+7. **Lancer `npm test`** : montrer les résultats des tests.
+8. **Lancer les benchmarks** : expliquer latence, P95 et RPS.
+
+### Pourquoi deux benchmarks ?
+
+> Le benchmark de la HashMap mesure les performances de notre structure de données, tandis que le benchmark HTTP mesure les performances du système complet à travers l'API REST. Les deux sont complémentaires : une opération rapide en mémoire n'implique pas nécessairement une requête HTTP aussi rapide, notamment en présence de validation, sérialisation ou persistance disque.
+
+## Commandes utiles
+
+
+| Commande                                                | Utilité                                      |
+| ------------------------------------------------------- | --------------------------------------------- |
+| `npm install`                                           | Installer les dépendances backend            |
+| `npm run build`                                         | Compiler le TypeScript backend                |
+| `npm start`                                             | Démarrer le serveur compilé                 |
+| `npm test`                                              | Compiler et exécuter les tests               |
+| `npm run benchmark:hashmap`                             | Mesurer les opérations HashMap               |
+| `npm run benchmark -- --requests 1000 --concurrency 10` | Mesurer l'API HTTP                            |
+| `cd client && npm install`                              | Installer les dépendances frontend           |
+| `cd client && npm run dev`                              | Démarrer l'interface React en développement |
+
+## Limites et pistes d'amélioration
+
+- Comparer les performances **avec et sans persistance**.
+- Tester plusieurs niveaux de concurrence et plusieurs volumes de clés.
+- Étudier le coût des snapshots synchrones et du nettoyage des entrées expirées.
+- Ajouter une configuration plus explicite des ports et de l'URL de l'API.
+- Automatiser les tests dans une pipeline CI.
+
+## Licence
+
+Aucune licence de redistribution n'est précisée dans ce README. Consulter les responsables du dépôt avant de réutiliser ou de redistribuer le code.
+
 CacheLab est un cache clé/valeur en mémoire, développé par trois étudiants en Mastère Développement Avancé & DevOps à La Plateforme. Le moteur utilise notre table de hachage avec chaînage séparé : aucun `Map`, Redis ou moteur de cache externe ne réalise le stockage.
 
 ## Installation et lancement
@@ -46,16 +410,17 @@ Pour des clés de longueur bornée et une bonne répartition, recherche, modific
 
 ## API REST
 
-| Méthode | Route | Résultat |
-|---|---|---|
-| POST | `/keys` | Créer `{key,value,ttl?}` : 201 ; doublon : 409 |
-| GET | `/keys` | `{keys:[...]}` ; tableau vide si cache vide |
-| GET | `/keys/:key` | `{key,value,expiresAt?,ttlRemaining?}` : 200 ou 404 |
-| PUT | `/keys/:key` | Modifier `{value,ttl?}` : 200 ou 404 |
-| DELETE | `/keys/:key` | Supprimer : 204 ou 404 |
-| POST | `/keys/:key/incr` | Ajouter 1 : 200 ou 404 |
-| POST | `/keys/:key/decr` | Soustraire 1 : 200 ou 404 |
-| GET | `/metrics` | Hits, misses, clés actives, octets, quota, taux de réussite |
+
+| Méthode | Route             | Résultat                                                     |
+| -------- | ----------------- | ------------------------------------------------------------- |
+| POST     | `/keys`           | Créer`{key,value,ttl?}` : 201 ; doublon : 409                |
+| GET      | `/keys`           | `{keys:[...]}` ; tableau vide si cache vide                   |
+| GET      | `/keys/:key`      | `{key,value,expiresAt?,ttlRemaining?}` : 200 ou 404           |
+| PUT      | `/keys/:key`      | Modifier`{value,ttl?}` : 200 ou 404                           |
+| DELETE   | `/keys/:key`      | Supprimer : 204 ou 404                                        |
+| POST     | `/keys/:key/incr` | Ajouter 1 : 200 ou 404                                        |
+| POST     | `/keys/:key/decr` | Soustraire 1 : 200 ou 404                                     |
+| GET      | `/metrics`        | Hits, misses, clés actives, octets, quota, taux de réussite |
 
 POST `/keys` et PUT exigent `Content-Type: application/json`. Les opérations numériques n'exigent pas de corps. Une valeur peut être tout JSON contenant uniquement des nombres finis. Les chaînes numériques, booléens et null ne sont pas convertis par INCR/DECR. Les décimaux sont acceptés ; les résultats hors de ±`Number.MAX_SAFE_INTEGER`, non finis ou inchangés par perte de précision sont refusés (400).
 
