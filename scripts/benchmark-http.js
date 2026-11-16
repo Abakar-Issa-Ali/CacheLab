@@ -1,150 +1,261 @@
-const { performance } = require("node:perf_hooks");
-const { cpus } = require("node:os");
 const { fork } = require("node:child_process");
 const { mkdtempSync, rmSync } = require("node:fs");
-const { tmpdir } = require("node:os");
+const { tmpdir, cpus, release } = require("node:os");
 const { join } = require("node:path");
-const { once } = require("node:events");
-const { createKeyValueServer } = require("../dist/src/server");
+const {
+  parseArgs,
+  request,
+  measure,
+  exportResults,
+} = require("./benchmark-support");
 
-// The API runs in another process to avoid sharing its event loop with the load generator.
-if (process.env.CACHELAB_BENCH_CHILD) {
-  const server = createKeyValueServer({
-    maxEntries: 100000,
-    persistencePath: process.env.BENCH_FILE || undefined,
+const HELP = `CACHELAB — HTTP BENCHMARK
+Usage: npm run benchmark -- [options]
+  --scenario light|medium|heavy   100/1, 1000/10, 10000/50 (requests/concurrency)
+  --requests N                   Measured requests per operation (1..1000000)
+  --concurrency N                Concurrent requests (1..100)
+  --volume N                     Initial baseline keys (default 100)
+  --warmup N                     Warm-up per operation (default 20, may be 0)
+  --mode memory|disk|both         Default memory; private temporary snapshots
+  --operations SET,GET,...        Default all eight operations; POST aliases SET
+  --timeout N                    Per-request timeout in ms (default 10000)
+  --json path                    Export full report JSON
+  --csv path                     Export flattened CSV
+  --help
+BENCH_REQUESTS, BENCH_CONCURRENCY, BENCH_VOLUMES and BENCH_PERSIST=1
+remain supported. CLI values take precedence. No external server is modified.`;
+
+function startWorker(options) {
+  const child = fork(join(__dirname, "benchmark-worker.js"), [], {
+    env: { ...process.env, CACHELAB_BENCH_OPTIONS: JSON.stringify(options) },
+    stdio: ["ignore", "ignore", "inherit", "ipc"],
   });
-  server.listen(0, "127.0.0.1", () => process.send(server.address().port));
-  process.on("message", () => server.close(() => process.exit(0)));
-} else
-  main().catch((e) => {
-    console.error(e);
-    process.exitCode = 1;
-  });
-function positiveList(name, fallback) {
-  const values = (process.env[name] || fallback).split(",").map(Number);
-  if (values.some((n) => !Number.isSafeInteger(n) || n < 1))
-    throw Error(`Invalid ${name}`);
-  return values;
-}
-async function main() {
-  const volumes = positiveList("BENCH_VOLUMES", "100,1000");
-  const concurrencies = positiveList("BENCH_CONCURRENCY", "1,10");
-  const samples = positiveList("BENCH_REQUESTS", "200")[0];
-  const disk = process.env.BENCH_PERSIST === "1";
-  console.log(
-    JSON.stringify({
-      date: new Date().toISOString(),
-      node: process.version,
-      platform: process.platform,
-      cpu: cpus()[0]?.model,
-      persistence: disk,
-      samples,
-      warmup: 20,
-    }),
-  );
-  for (const volume of volumes)
-    for (const concurrency of concurrencies) {
-      const dir = mkdtempSync(join(tmpdir(), "cachelab-bench-"));
-      const child = fork(__filename, [], {
-        env: {
-          ...process.env,
-          CACHELAB_BENCH_CHILD: "1",
-          BENCH_FILE: disk ? join(dir, "cache.json") : "",
-        },
-        stdio: ["ignore", "inherit", "inherit", "ipc"],
-      });
-      try {
-        const [port] = await Promise.race([
-          once(child, "message"),
-          once(child, "exit").then(() => {
-            throw Error("API exited before startup");
-          }),
-        ]);
-        const base = `http://127.0.0.1:${port}`;
-        async function request(path, method = "GET", body, expected = 200) {
-          const r = await fetch(base + path, {
-            method,
-            headers: body ? { "content-type": "application/json" } : undefined,
-            body: body ? JSON.stringify(body) : undefined,
-            signal: AbortSignal.timeout(10000),
-          });
-          await r.arrayBuffer();
-          return r.status === expected;
-        }
-        for (let i = 0; i < volume; i++)
-          if (
-            !(await request("/keys", "POST", { key: `k${i}`, value: i }, 201))
-          )
-            throw Error("Seeding failed");
-        let sequence = 0;
-        const operations = {
-          GET: () => request("/keys/k0"),
-          POST: () =>
-            request(
-              "/keys",
-              "POST",
-              { key: `new${sequence++}`, value: 1 },
-              201,
-            ),
-          PUT: () => request("/keys/k0", "PUT", { value: 1 }),
-          KEYS: () => request("/keys"),
-          INCR: () => request("/keys/k0/incr", "POST"),
-          DECR: () => request("/keys/k0/decr", "POST"),
-          DELETE: (i) => request(`/keys/delete${i}`, "DELETE", undefined, 204),
-        };
-        for (const [operation, run] of Object.entries(operations)) {
-          if (operation === "DELETE")
-            for (let i = 0; i < samples + 20; i++)
-              await request(
-                "/keys",
-                "POST",
-                { key: `delete${i}`, value: 0 },
-                201,
-              );
-          for (let i = 0; i < 20; i++)
-            if (!(await run(samples + i)))
-              throw Error(`Warmup failed: ${operation}`);
-          const times = [];
-          let next = 0,
-            success = 0;
-          const start = performance.now();
-          await Promise.all(
-            Array.from({ length: Math.min(concurrency, samples) }, async () => {
-              while (next < samples) {
-                const i = next++;
-                const before = performance.now();
-                try {
-                  if (await run(i)) success++;
-                } catch {}
-                times.push(performance.now() - before);
-              }
-            }),
-          );
-          const elapsed = performance.now() - start;
-          times.sort((a, b) => a - b);
-          const p = (q) => times[Math.ceil(times.length * q) - 1];
-          const round = (n) => Number(n.toFixed(3));
-          console.log(
-            JSON.stringify({
-              volume,
-              concurrency,
-              operation,
-              success,
-              failed: samples - success,
-              meanMs: round(times.reduce((a, b) => a + b, 0) / times.length),
-              minMs: round(times[0]),
-              maxMs: round(times.at(-1)),
-              p50Ms: round(p(0.5)),
-              p95Ms: round(p(0.95)),
-              p99Ms: round(p(0.99)),
-              requestsPerSecond: round((samples / elapsed) * 1000),
-            }),
-          );
-        }
-      } finally {
-        if (child.connected) child.send("stop");
-        if (child.exitCode === null) await once(child, "exit");
-        rmSync(dir, { recursive: true, force: true });
+  const ready = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("Benchmark API startup timed out"));
+    }, 15000);
+    function cleanup() {
+      clearTimeout(timeout);
+      child.off("message", message);
+      child.off("error", error);
+      child.off("exit", exit);
+    }
+    function message(data) {
+      if (Number.isInteger(data?.port)) {
+        cleanup();
+        resolve(`http://127.0.0.1:${data.port}`);
       }
     }
+    function error(e) {
+      cleanup();
+      reject(e);
+    }
+    function exit(code) {
+      cleanup();
+      reject(new Error(`Benchmark API exited before startup (${code})`));
+    }
+    child.on("message", message);
+    child.once("error", error);
+    child.once("exit", exit);
+  });
+  return { child, ready };
 }
+async function stopWorker(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise((resolve) => {
+    const timeout = setTimeout(() => child.kill("SIGKILL"), 3000);
+    child.once("exit", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+    child.kill("SIGTERM");
+  });
+}
+function operationSpec(operation, prefix, index) {
+  const target = `/keys/${prefix}base-0`;
+  switch (operation) {
+    case "SET":
+      return {
+        path: "/keys",
+        method: "POST",
+        expected: 201,
+        body: { key: `${prefix}set-${index}`, value: 1 },
+      };
+    case "GET":
+      return { path: target };
+    case "PUT":
+      return { path: target, method: "PUT", body: { value: index } };
+    case "DELETE":
+      return {
+        path: `/keys/${prefix}delete-${index}`,
+        method: "DELETE",
+        expected: 204,
+      };
+    case "KEYS":
+      return { path: "/keys" };
+    case "INCR":
+      return { path: target + "/incr", method: "POST" };
+    case "DECR":
+      return { path: target + "/decr", method: "POST" };
+    case "METRICS":
+      return { path: "/metrics" };
+    default:
+      throw new Error(`Unknown operation ${operation}`);
+  }
+}
+async function runOperation(config, mode, volume, concurrency, operation) {
+  const dir = mkdtempSync(join(tmpdir(), "cachelab-bench-"));
+  const maxEntries = volume + config.requests + config.warmup + 1;
+  // Dedicated quotas cover all keys and small numeric values, independently of production defaults.
+  const options = {
+    maxEntries,
+    maxStorageBytes: maxEntries * 256,
+    ...(mode === "disk" ? { persistencePath: join(dir, "cache.json") } : {}),
+  };
+  let worker;
+  try {
+    worker = startWorker(options);
+    const base = await worker.ready;
+    const prefix = "bench-cachelab-";
+    const send = (spec) => request(base, spec, config.timeoutMs);
+    async function checked(spec) {
+      const result = await send(spec);
+      if (result.kind !== "success")
+        throw new Error(
+          `Preparation/warm-up failed: ${result.kind} ${result.status ?? result.error} ${result.body ?? ""}`,
+        );
+      return result.body;
+    }
+    for (let i = 0; i < volume; i++)
+      await checked({
+        path: "/keys",
+        method: "POST",
+        expected: 201,
+        body: { key: `${prefix}base-${i}`, value: 0 },
+      });
+    if (operation === "DELETE")
+      for (let i = 0; i < config.requests + config.warmup; i++)
+        await checked({
+          path: "/keys",
+          method: "POST",
+          expected: 201,
+          body: { key: `${prefix}delete-${i}`, value: 0 },
+        });
+    for (let i = 0; i < config.warmup; i++)
+      await checked(operationSpec(operation, prefix, i));
+    const keysBefore = JSON.parse(
+      await checked({ path: "/metrics" }),
+    ).totalKeys;
+    const stats = await measure(
+      (i) => send(operationSpec(operation, prefix, config.warmup + i)),
+      config.requests,
+      concurrency,
+    );
+    const after = await send({ path: "/metrics" });
+    const keysAfter =
+      after.kind === "success" ? JSON.parse(after.body).totalKeys : null;
+    const postCheckError =
+      after.kind === "success"
+        ? undefined
+        : { kind: after.kind, status: after.status, error: after.error };
+    const spec = operationSpec(operation, ":key-", 0);
+    return {
+      mode,
+      volume,
+      concurrency,
+      operation,
+      method: spec.method || "GET",
+      route: ["GET", "PUT", "DELETE"].includes(operation)
+        ? "/keys/:key"
+        : ["INCR", "DECR"].includes(operation)
+          ? `/keys/:key/${operation.toLowerCase()}`
+          : spec.path,
+      warmup: config.warmup,
+      keysBefore,
+      keysAfter,
+      ...(postCheckError ? { postCheckError } : {}),
+      maxEntries,
+      maxStorageBytes: options.maxStorageBytes,
+      ...stats,
+    };
+  } finally {
+    if (worker) await stopWorker(worker.child);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+function printRow(row) {
+  console.log(
+    [
+      row.mode.padEnd(7),
+      String(row.volume).padStart(6),
+      String(row.concurrency).padStart(4),
+      row.operation.padEnd(7),
+      String(row.requests).padStart(7),
+      String(row.success).padStart(7),
+      String(row.failed).padStart(5),
+      String(row.httpErrors).padStart(5),
+      String(row.networkErrors).padStart(5),
+      ...["minMs", "maxMs", "meanMs", "p50Ms", "p95Ms", "p99Ms"].map((k) =>
+        row[k].toFixed(3).padStart(9),
+      ),
+      row.requestsPerSecond.toFixed(1).padStart(9),
+      `${row.keysBefore}->${row.keysAfter ?? "?"}`,
+    ].join(" "),
+  );
+}
+async function main(args = process.argv.slice(2)) {
+  const config = parseArgs(args);
+  if (config.help) {
+    console.log(HELP);
+    return;
+  }
+  const metadata = {
+    date: new Date().toISOString(),
+    node: process.version,
+    os: `${process.platform} ${release()} ${process.arch}`,
+    cpu: cpus()[0]?.model,
+    scenario: config.scenario,
+    clock: "performance.now",
+    percentileMethod: "nearest-rank: sorted[ceil(p*N)-1]",
+    latencyUnit: "ms",
+    target: "isolated local child process per operation",
+  };
+  const report = { schemaVersion: 1, metadata, config, results: [] };
+  console.log("CACHELAB — HTTP BENCHMARK\n" + JSON.stringify(metadata));
+  console.log(
+    "Mode    Volume Conc Op      Requests Success  Fail  HTTP   Net   Min(ms)   Max(ms)   Avg(ms)   P50(ms)   P95(ms)   P99(ms)       RPS Keys(before->after)",
+  );
+  for (const mode of config.mode === "both"
+    ? ["memory", "disk"]
+    : [config.mode])
+    for (const volume of config.volumes)
+      for (const concurrency of config.concurrencies)
+        for (const operation of config.operations) {
+          const row = await runOperation(
+            config,
+            mode,
+            volume,
+            concurrency,
+            operation,
+          );
+          report.results.push(row);
+          printRow(row);
+        }
+  exportResults(report, config);
+  const errors = report.results.reduce((sum, r) => sum + r.failed, 0);
+  console.log(
+    `Completed: ${report.results.reduce((sum, r) => sum + r.requests, 0)} measured requests; ${errors} failures.`,
+  );
+  if (config.json) console.log(`JSON: ${config.json}`);
+  if (config.csv) console.log(`CSV: ${config.csv}`);
+  if (errors || report.results.some((row) => row.postCheckError))
+    process.exitCode = 1;
+  return report;
+}
+if (require.main === module)
+  main().catch((error) => {
+    console.error("Benchmark failed:", error.message);
+    process.exitCode = 1;
+  });
+module.exports = { main, runOperation, operationSpec };
